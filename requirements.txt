@@ -1,3 +1,5 @@
 ccxt
 pandas
 flask
+python-telegram-bot
+matplotlib
