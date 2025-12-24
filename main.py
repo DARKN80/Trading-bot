@@ -1,1 +1,1 @@
-print("Trading bot is boting up")
+print("Trading bot is booting up")
