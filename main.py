@@ -20,6 +20,7 @@ def run_flask():
     print(f"Starting Flask on port {port}")
     app.run(host="0.0.0.0", port=port)
 
+# Start Flask in a separate thread
 threading.Thread(target=run_flask, daemon=True).start()
 
 # =====================
