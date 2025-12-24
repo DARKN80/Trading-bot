@@ -1,105 +1,100 @@
-# main.py
+    app.run(host="0.0.0.0", port=port)
+
+import os
+import time
 import ccxt
 import pandas as pd
-import time
+import requests
 import threading
 from flask import Flask
-from telegram import Bot
-import os
-import matplotlib.pyplot as plt
 
-# ------------------------------
-# 1. Flask server for Render
-# ------------------------------
+# =====================
+# Flask (Render keep-alive)
+# =====================
 app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "Trading bot is alive!"
+    return "Bot running"
 
 def run_flask():
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
 
-threading.Thread(target=run_flask).start()
+threading.Thread(target=run_flask, daemon=True).start()
 
-# ------------------------------
-# 2. Telegram Bot Setup
-# ------------------------------
-TELEGRAM_TOKEN = "8201131169:AAGNp5VOkeTHj-fTjquUpDpoCk7wxbi4W4E"  # replace with your BotFather token
-CHAT_ID = "7752955793"           # replace with your Telegram ID
-bot = Bot(token=TELEGRAM_TOKEN)
+# =====================
+# Telegram
+# =====================
+TELEGRAM_TOKEN = os.getenv("8452796874:AAEMPhUfnSwgb63ZweDU1StMpKeYvsQlCcU")
+CHAT_ID = "7752955793"
 
 def send_message(text):
-    try:
-        bot.send_message(chat_id=CHAT_ID, text=text)
-    except Exception as e:
-        print("Telegram send error:", e)
+    if not TELEGRAM_TOKEN:
+        print("Telegram token missing")
+        return
 
-def send_chart(df, symbol):
-    try:
-        plt.figure(figsize=(6,4))
-        plt.plot(df['timestamp'], df['close'], label='Close Price', color='blue')
-        plt.title(f'{symbol} Price Chart')
-        plt.xlabel('Time')
-        plt.ylabel('Price')
-        plt.xticks(rotation=45)
-        plt.tight_layout()
-        plt.savefig("chart.png")
-        plt.close()
-        bot.send_photo(chat_id=CHAT_ID, photo=open("chart.png", "rb"))
-    except Exception as e:
-        print("Chart send error:", e)
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    requests.post(url, json={"chat_id": CHAT_ID, "text": text})
 
-# ------------------------------
-# 3. Setup Bybit connection
-# ------------------------------
+# =====================
+# Exchange
+# =====================
 exchange = ccxt.bybit({
     "enableRateLimit": True
 })
 
-symbol = "BTC/USDT"  # coin to watch
-timeframe = "5m"
-limit = 100
+TIMEFRAME = "5m"
+FETCH_INTERVAL = 60  # seconds
+VOL_THRESHOLD = 0.4  # %
 
-# ------------------------------
-# 4. Main Bot Loop
-# ------------------------------
+# =====================
+# Load markets once
+# =====================
+markets = exchange.load_markets()
+
+symbols = [
+    s for s in markets
+    if s.endswith("/USDT")
+    and markets[s]["active"]
+    and markets[s]["spot"]
+][:15]  # limit scan count
+
+send_message(f"Scanner started\nWatching {len(symbols)} symbols")
+
+# =====================
+# Scanner loop
+# =====================
 while True:
     try:
-        ohlcv = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
-        df = pd.DataFrame(
-            ohlcv,
-            columns=["timestamp", "open", "high", "low", "close", "volume"]
-        )
-        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+        best = None
+        best_move = 0
 
-        # Print last 5 candles in logs
-        print(df.tail())
+        for symbol in symbols:
+            ohlcv = exchange.fetch_ohlcv(symbol, TIMEFRAME, limit=10)
+            df = pd.DataFrame(ohlcv, columns=["t","o","h","l","c","v"])
 
-        # Telegram message for the last candle
-        last = df.iloc[-1]
-        message = (
-            f"Symbol: {symbol}\n"
-            f"Time: {last['timestamp']}\n"
-            f"Open: {last['open']}\n"
-            f"High: {last['high']}\n"
-            f"Low: {last['low']}\n"
-            f"Close: {last['close']}\n"
-            f"Volume: {last['volume']}"
-        )
-        send_message(message)
+            change = ((df.iloc[-1]["c"] - df.iloc[-2]["c"]) / df.iloc[-2]["c"]) * 100
 
-        # Optional: send chart every N intervals (like every 5 minutes)
-        if int(time.time()) % 300 < 60:  # every ~5 minutes
-            send_chart(df, symbol)
+            if abs(change) > best_move:
+                best_move = abs(change)
+                best = (symbol, change)
 
-        time.sleep(60)  # fetch every minute
+            time.sleep(1.2)  # polite delay
+
+        if best and best_move >= VOL_THRESHOLD:
+            send_message(
+                f"📈 Market Scanner Alert\n"
+                f"Symbol: {best[0]}\n"
+                f"Move: {best[1]:.2f}%\n"
+                f"Timeframe: {TIMEFRAME}"
+            )
+
+        time.sleep(FETCH_INTERVAL)
 
     except ccxt.RateLimitExceeded:
-        print("Rate limit hit, sleeping 10 seconds...")
-        time.sleep(10)
+        print("Rate limit hit, backing off")
+        time.sleep(30)
 
     except Exception as e:
-        print("Unexpected error:", e)
-        time.sleep(10)
+        print("Error:", e)
+        time.sleep(20)
